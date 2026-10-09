@@ -1,0 +1,134 @@
+# ============================================================
+# Configuración del proyecto: Privacidad aparente vs. medible en IDS basados en ML
+# ============================================================
+
+paths:
+  # Rutas relativas a la carpeta code/
+  data_root: "../datasets/raw"                       # solo para 06 (CSV original de HIKARI-2021, no incluido)
+  cicids_parquet: "../datasets/CICIDS2017_CLEAN.parquet"   # se reconstruye con scripts/prepare_cicids_parquet.py
+  hikari_parquet: "../datasets/HIKARI2021_CLEAN.parquet"
+  hikari_v2_pairs_parquet: "../datasets/HIKARI2021_CLEAN_v2_pairs.parquet"
+  hikari_v2_main_parquet: "../datasets/HIKARI2021_CLEAN_v2_main.parquet"
+  cicids_taxonomy: "../datasets/feature_privacy_taxonomy_CICIDS2017.csv"
+  hikari_taxonomy: "../datasets/feature_privacy_taxonomy_HIKARI.csv"
+  splits_dir: "../datasets/splits"
+  reference_predictions_dir: "../results/reference_predictions"   # opcional (comparación fila a fila)
+  results_dir: "../results"
+  domain_bounds_dir: "../results/2026-10-07_S3A/S3A_domain_bounds"   # límites por dominio congelados (S3)
+
+seeds:
+  split: 42
+  rf: 42
+  dp: 42
+  bootstrap: 42
+
+split:
+  test_size: 0.20
+
+# Campos por dataset:
+#   prefix              prefijo de los archivos de predicciones/probabilidades
+#   target              benign_string (Label textual, BENIGN=0) | binary (Label 0/1)
+#   class_weight        opcional; si falta se usa random_forest.class_weight
+#   decision_threshold  umbral fijo entre escenarios
+datasets:
+  CICIDS2017:
+    prefix: CICIDS
+    parquet_key: cicids_parquet
+    taxonomy_key: cicids_taxonomy
+    target: benign_string
+    category_column: "Label"            # categoría de tráfico para métricas por tipo
+    exclude_columns: ["Label", "source_file"]
+    s1_drop: ["Destination Port"]
+    expected_features: {S0: 78, S1: 77, S2: 41, S1b: 78}
+    split_files: {train: "CICIDS2017_train_indices.npy", test: "CICIDS2017_test_indices.npy"}
+    expected_split: {train: 2015437, test: 503860}
+    class_weight: "balanced_subsample"   # E1 (2026-10-06): se conserva por la regla de desempate
+    decision_threshold: 0.34             # E1 (2026-10-06): validado; antes 0.50 (histórico)
+  HIKARI2021:
+    prefix: HIKARI
+    parquet_key: hikari_parquet
+    taxonomy_key: hikari_taxonomy
+    target: binary
+    category_column: "traffic_category"
+    exclude_columns: ["Label", "traffic_category", "uid", "originh", "responh"]
+    s1_drop: ["originp", "responp"]
+    expected_features: {S0: 81, S1: 79, S2: 42, S1b: 81}
+    split_files: {train: "HIKARI2021_train_indices.npy", test: "HIKARI2021_test_indices.npy"}
+    expected_split: {train: 444222, test: 111056}
+    decision_threshold: 0.02
+  # Versiones limpias v2 (D2). class_weight y umbral validados en D3.
+  HIKARI2021_v2_pairs:
+    prefix: HIKARI_v2_pairs
+    parquet_key: hikari_v2_pairs_parquet
+    taxonomy_key: hikari_taxonomy
+    target: binary
+    category_column: "traffic_category"
+    exclude_columns: ["Label", "traffic_category", "uid", "originh", "responh"]
+    s1_drop: ["originp", "responp"]
+    expected_features: {S0: 81, S1: 79, S2: 42, S1b: 81}
+    split_files: {train: "HIKARI2021_v2_pairs_train_indices.npy", test: "HIKARI2021_v2_pairs_test_indices.npy"}
+    expected_split: {train: 387738, test: 96935}
+    class_weight: null          # validado en D3 (2026-10-06_D3): None
+    decision_threshold: 0.40    # validado en D3
+  HIKARI2021_v2_main:
+    prefix: HIKARI_v2_main
+    parquet_key: hikari_v2_main_parquet
+    taxonomy_key: hikari_taxonomy
+    target: binary
+    category_column: "traffic_category"
+    exclude_columns: ["Label", "traffic_category", "uid", "originh", "responh"]
+    s1_drop: ["originp", "responp"]
+    expected_features: {S0: 81, S1: 79, S2: 42, S1b: 81}
+    split_files: {train: "HIKARI2021_v2_main_train_indices.npy", test: "HIKARI2021_v2_main_test_indices.npy"}
+    expected_split: {train: 354072, test: 88519}
+    class_weight: "balanced"    # validado en D3 (2026-10-06_D3); difiere del global, CICIDS NO lo hereda
+    decision_threshold: 0.41    # validado en D3 (meseta exacta 0.41-0.46 en validación)
+
+random_forest:
+  n_estimators: 100
+  max_depth: null
+  min_samples_split: 2
+  min_samples_leaf: 1
+  max_features: "sqrt"
+  bootstrap: true
+  class_weight: "balanced_subsample"
+  n_jobs: -1
+
+scenarios:
+  S0: {type: baseline}
+  S1: {type: suppression}          # "S1a" en las tablas; columnas: datasets.<d>.s1_drop
+  S1b: {type: port_generalization}  # puertos -> rango IANA (0 well-known, 1 registered, 2 dynamic); mismas columnas que s1_drop
+  S2:
+    type: taxonomy_minimization
+    keep_privacy_relevance: ["LOW"]   # orden canónico = orden del dataset
+
+# Limpieza v2 de HIKARI (D2). IPs y puertos tomados de D1b
+# (results/2026-10-06_D1/D1_hikari_pairs/D1b_typical_ports.json).
+hikari_v2_cleaning:
+  pair_identity_columns: ["originh", "responh", "originp", "responp"]
+  excluded_categories_main: ["XMRIGCC CryptoMiner"]
+  residual_rules_main:
+    Probing:        {attacker: "103.255.15.150", victims: ["128.199.242.104"], ports: [443]}
+    Bruteforce:     {attacker: "103.255.15.23",  victims: ["128.199.242.104", "128.199.88.81"], ports: [443]}
+    Bruteforce-XML: {attacker: "103.255.15.23",  victims: ["128.199.242.104", "128.199.88.81"], ports: [443]}
+
+# Protocolo de revalidación (D3, réplica de las fases 9A–9C)
+validation:
+  internal_validation_size: 0.20
+  internal_validation_seed: 42
+  class_weight_candidates: [null, "balanced", "balanced_subsample"]
+  threshold_grid: {start: 0.01, stop: 0.50, step: 0.01}
+  # Desempate (fijado 2026-10-06, antes de ejecutar CICIDS): si |ΔF1| < tie_tolerance entre la mejor
+  # opción y la configuración congelada del dataset, se conserva la congelada (--apply-tie-rule).
+  tie_tolerance: 1.0e-4
+
+statistics:
+  n_bootstrap: 1000
+  confidence_level: 0.95
+  alpha: 0.05
+  primary_metric: "f1"
+  utility_metrics: ["accuracy", "precision", "recall", "f1", "fpr"]
+
+dp:   # S3 histórico (src/dp.py)
+  epsilons: [0.1, 0.5, 1.0, 5.0, 10.0]
+  l2_clip_bound: {CICIDS2017: 3.245727, HIKARI2021: 2.030665}
